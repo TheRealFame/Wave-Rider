@@ -1,0 +1,146 @@
+[gd_scene load_steps=11 format=3 uid="uid://bnnya84ml6k0y"]
+
+[ext_resource type="PackedScene" uid="uid://costet6h2rdq7" path="res://Ice/IceBerg/iceberg.tscn" id="1_jvrio"]
+[ext_resource type="Texture2D" uid="uid://d0debx0fjn5fl" path="res://Ice/Stylized_Ice_001_height.png" id="2_t5ajs"]
+[ext_resource type="Material" uid="uid://c6edoev6m3afn" path="res://Scripts/Shaders/water_plane.tres" id="2_wmnb8"]
+[ext_resource type="Texture2D" uid="uid://drstqnriac0ny" path="res://Ice/Stylized_Ice_001_refraction.png" id="3_wmnb8"]
+[ext_resource type="ArrayOccluder3D" uid="uid://cqwb3hd7a3dcl" path="res://Maps/game_map.occ" id="4_t5ajs"]
+
+[sub_resource type="WorldBoundaryShape3D" id="WorldBoundaryShape3D_74fk4"]
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_4xowi"]
+material = ExtResource("2_wmnb8")
+size = Vector2(200, 200)
+subdivide_width = 24
+subdivide_depth = 24
+
+[sub_resource type="CompressedTexture2D" id="CompressedTexture2D_a202f"]
+load_path = "res://.godot/imported/Stylized_Ice_001_basecolor.png-4a89755b756817860b285beb91666c53.s3tc.ctex"
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_noarx"]
+transparency = 4
+blend_mode = 1
+shading_mode = 0
+diffuse_mode = 3
+specular_mode = 1
+albedo_texture = SubResource("CompressedTexture2D_a202f")
+albedo_texture_force_srgb = true
+heightmap_texture = ExtResource("2_t5ajs")
+refraction_texture = ExtResource("3_wmnb8")
+uv1_scale = Vector3(2, 2, 2)
+uv1_triplanar = true
+stencil_flags = 2
+
+[sub_resource type="GDScript" id="GDScript_wmnb8"]
+script/source = "extends CSGBox3D
+# This function has been removed.
+
+func _ready() -> void:
+	pass
+
+#func _process(_delta):
+	#var ice_holes = get_tree().get_nodes_in_group(\"IceHole\")
+	#var bikes = get_tree().get_nodes_in_group(\"Bike\")
+#
+	#if ice_holes.size() == 0 or bikes.size() == 0:
+		#return 
+#
+	#var IceHole = ice_holes[0] 
+	#for bike in bikes:
+		#bike.global_position.z = IceHole.global_position.z
+"
+
+[node name="EntireMap" type="Node3D"]
+
+[node name="Background" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -1.355, 0)
+
+[node name="iceberg2" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, 35.486813, 1.3607292, 7.3126445)
+
+[node name="iceberg3" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, 16.23429, 1.3607302, -15.239609)
+
+[node name="iceberg4" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, 15.752586, 1.3607273, 16.365065)
+
+[node name="iceberg5" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, 27.69784, 1.3607273, -27.640053)
+
+[node name="iceberg6" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, 12.161053, 1.3607292, -49.447327)
+
+[node name="iceberg7" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, 33.594826, 1.3607216, -42.322052)
+
+[node name="iceberg8" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, -17.68948, 1.3607216, -6.051016)
+
+[node name="iceberg9" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, -16.425276, 1.360733, -25.064625)
+
+[node name="iceberg10" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, -23.999954, 1.3607292, 11.924379)
+
+[node name="iceberg11" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, -30.328304, 1.3607292, -0.20312881)
+
+[node name="iceberg12" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, -34.514286, 1.3607254, -22.437035)
+
+[node name="iceberg13" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, -25.777351, 1.360733, -42.841167)
+
+[node name="iceberg14" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, -37.065945, 1.3607292, -44.16417)
+
+[node name="iceberg15" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, -14.504884, 1.3607292, -56.35989)
+
+[node name="iceberg16" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, -26.67773, 1.360733, -58.34069)
+
+[node name="iceberg17" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, 34.219837, 1.3607292, 39.153015)
+
+[node name="iceberg18" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, -18.037594, 1.3607254, 34.338417)
+
+[node name="iceberg19" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, 52.23273, 1.3607292, 34.547462)
+
+[node name="iceberg20" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, -33.075768, 1.3607292, 42.84487)
+
+[node name="iceberg21" parent="Background" instance=ExtResource("1_jvrio")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, -15.68736, 1.3607254, 60.500946)
+
+[node name="WorldBounds" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.17950976, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="WorldBounds"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.18, 0)
+shape = SubResource("WorldBoundaryShape3D_74fk4")
+
+[node name="Water" type="MeshInstance3D" parent="."]
+mesh = SubResource("PlaneMesh_4xowi")
+
+[node name="Ice" type="CSGBox3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.17950976, 0)
+size = Vector3(200, 1, 200)
+material = SubResource("StandardMaterial3D_noarx")
+
+[node name="Icehole" type="CSGBox3D" parent="Ice" groups=["IceHole"]]
+unique_name_in_owner = true
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.027, 0.23632813, 0)
+visible = false
+visibility_parent = NodePath("..")
+operation = 2
+size = Vector3(3.5943604, 1.4726563, 4.1376953)
+script = SubResource("GDScript_wmnb8")
+
+[node name="OccluderInstance3D" type="OccluderInstance3D" parent="."]
+layers = 2
+occluder = ExtResource("4_t5ajs")
+bake_mask = 4294967294
+bake_simplification_distance = 0.2

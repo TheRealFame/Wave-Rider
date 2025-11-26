@@ -1,0 +1,6 @@
+1, Motocycle - https://sketchfab.com/3d-models/ktm-1290-super-duke-low-poly-and-stylized-f6f6dd2cfe5a4c50aa7863aed8d74a47
+2. Water Shader - https://godotshaders.com/shader/water-shader-3d-godot-4-3/
+3. Ice - https://3dtextures.me/2024/06/19/stylized-ice-001/
+4. Heart Outline - https://godotshaders.com/shader/2d-circular-outline-shader/
+5. IceBerg - https://sketchfab.com/3d-models/iceberg-low-poly-a29e129152ad4014b955fb31ad9fec4e
+6. Bouncing Shader - https://godotshaders.com/shader/bounce-wave/

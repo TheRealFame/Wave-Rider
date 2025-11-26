@@ -1,0 +1,8 @@
+[gd_resource type="StandardMaterial3D" load_steps=2 format=3 uid="uid://d0j1k3rs11qyf"]
+
+[ext_resource type="Texture2D" uid="uid://6nfp0634ehsq" path="res://Toon_SuperDuke/Toon_SuperDuke_Toon_SuperDuke.png" id="1_87svb"]
+
+[resource]
+resource_name = "Toon_SuperDuke.001"
+cull_mode = 2
+albedo_texture = ExtResource("1_87svb")

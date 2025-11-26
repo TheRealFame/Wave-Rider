@@ -1,0 +1,30 @@
+[gd_scene load_steps=6 format=3 uid="uid://costet6h2rdq7"]
+
+[ext_resource type="PackedScene" uid="uid://dteo6u3v6s24e" path="res://Ice/IceBerg/iceberg.glb" id="1_qdoo0"]
+
+[sub_resource type="Gradient" id="Gradient_tjdks"]
+offsets = PackedFloat32Array(0.14516129, 0.61290324, 0.8655914)
+colors = PackedColorArray(6.930828e-06, 0.8302041, 0.9525927, 1, 0.18935794, 0.68186504, 0.9999997, 1, 0.17206928, 0.6774117, 0.9999973, 1)
+
+[sub_resource type="FastNoiseLite" id="FastNoiseLite_24d76"]
+
+[sub_resource type="NoiseTexture2D" id="NoiseTexture2D_6nn4x"]
+noise = SubResource("FastNoiseLite_24d76")
+color_ramp = SubResource("Gradient_tjdks")
+seamless = true
+invert = true
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_syak3"]
+albedo_texture = SubResource("NoiseTexture2D_6nn4x")
+metallic = 0.08
+roughness = 0.2
+normal_texture = SubResource("NoiseTexture2D_6nn4x")
+uv1_scale = Vector3(5.29, 5.29, 5.29)
+
+[node name="iceberg" instance=ExtResource("1_qdoo0")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, 0, 0, 0)
+
+[node name="Cylinder" parent="." index="0"]
+transform = Transform3D(0.83, 0, 0, 0, 0.83, 0, 0, 0, 0.83, 0, -2.376315, 0)
+layers = 2
+surface_material_override/0 = SubResource("StandardMaterial3D_syak3")

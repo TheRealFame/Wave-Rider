@@ -1,0 +1,376 @@
+[gd_scene load_steps=10 format=3 uid="uid://cbe3r18k3f4ox"]
+
+[ext_resource type="PackedScene" uid="uid://bnnya84ml6k0y" path="res://Maps/entire_map.tscn" id="1_pkn6g"]
+[ext_resource type="PackedScene" uid="uid://ct0x2swc8tk12" path="res://Toon_SuperDuke/toon_super_duke_base.tscn" id="3_bq2oe"]
+[ext_resource type="PackedScene" uid="uid://duo0ifmxr78wf" path="res://Maps/game_hud.tscn" id="4_74fk4"]
+
+[sub_resource type="GDScript" id="GDScript_74fk4"]
+script/source = "extends Node3D
+
+# Configuration
+@export var map_section_prefab: PackedScene
+@export var player: Node3D
+@export var scroll_threshold: float = 50.0
+@export var map_section_size: float = 100.0
+@export var max_visible_sections: int = 3
+
+# Internal state
+var active_sections: Array = []
+var current_section_index: Vector2 = Vector2.ZERO
+var sections_container: Node3D
+var water_plane: MeshInstance3D
+
+func _ready():
+	print(\"Infinite Map System Starting...\")
+	
+	# Validate setup
+	if not map_section_prefab:
+		push_error(\"Map section prefab not assigned! Drag a scene into the inspector.\")
+		return
+	
+	if not player:
+		push_error(\"Player node not assigned!\")
+		return
+	
+	# Create container for map sections
+	sections_container = Node3D.new()
+	sections_container.name = \"SectionsContainer\"
+	add_child(sections_container)
+	
+	print(\"Container created, waiting for tree...\")
+	
+	# CRITICAL: Wait multiple frames to ensure everything is ready
+	for i in range(3):
+		await get_tree().process_frame
+	
+	print(\"Spawning initial sections...\")
+	
+	# Generate initial map sections (3x3 grid around player)
+	for x in range(-1, 2):
+		for z in range(-1, 2):
+			spawn_section(Vector2(x, z))
+	
+	print(\"Initial sections spawned: \", active_sections.size())
+
+func _process(_delta):
+	if not player or not is_instance_valid(player):
+		return
+	
+	# Make water plane follow player position
+	if water_plane and is_instance_valid(water_plane):
+		water_plane.global_position.x = player.global_position.x
+		water_plane.global_position.z = player.global_position.z
+	
+	check_player_position()
+
+func check_player_position():
+	if not player:
+		return
+		
+	var player_pos = player.global_position
+	
+	# Calculate which section the player is currently in
+	var section_x = floor(player_pos.x / map_section_size)
+	var section_z = floor(player_pos.z / map_section_size)
+	var player_section = Vector2(section_x, section_z)
+	
+	# Check if player moved to a new section
+	if player_section != current_section_index:
+		print(\"Player moved to new section: \", player_section)
+		current_section_index = player_section
+		update_sections()
+
+func update_sections():
+	# Spawn sections around the player's current section
+	for x in range(-1, 2):
+		for z in range(-1, 2):
+			var section_pos = current_section_index + Vector2(x, z)
+			if not has_section(section_pos):
+				spawn_section(section_pos)
+	
+	# Remove sections that are too far away
+	cleanup_distant_sections()
+
+func spawn_section(section_pos: Vector2):
+	if not map_section_prefab:
+		return
+	
+	# Check if section already exists
+	if has_section(section_pos):
+		print(\"Section already exists at: \", section_pos)
+		return
+	
+	print(\"Spawning section at grid: \", section_pos)
+	
+	# Instance the map section
+	var section = map_section_prefab.instantiate()
+	
+	if not section:
+		push_error(\"Failed to instantiate map section!\")
+		return
+	
+	# Calculate world position FIRST
+	var world_pos = Vector3(
+		section_pos.x * map_section_size,
+		0,
+		section_pos.y * map_section_size
+	)
+	
+	# Set position BEFORE adding to tree (this often fixes the error)
+	section.position = world_pos
+	
+	# Add to tree
+	sections_container.add_child(section)
+	
+	# Store section data immediately
+	active_sections.append({
+		\"node\": section,
+		\"grid_pos\": section_pos
+	})
+	
+	print(\"✓ Section spawned at world pos: \", world_pos)
+
+func has_section(section_pos: Vector2) -> bool:
+	for section_data in active_sections:
+		if section_data[\"grid_pos\"] == section_pos:
+			return true
+	return false
+
+func cleanup_distant_sections():
+	var sections_to_remove = []
+	
+	for section_data in active_sections:
+		if not is_instance_valid(section_data[\"node\"]):
+			sections_to_remove.append(section_data)
+			continue
+			
+		var grid_pos = section_data[\"grid_pos\"]
+		var distance = grid_pos.distance_to(current_section_index)
+		
+		if distance > max_visible_sections:
+			print(\"Removing distant section at: \", grid_pos)
+			sections_to_remove.append(section_data)
+	
+	# Remove sections
+	for section_data in sections_to_remove:
+		active_sections.erase(section_data)
+		if is_instance_valid(section_data[\"node\"]):
+			section_data[\"node\"].queue_free()
+
+# Optional: Create water plane
+func create_water_plane():
+	var plane_mesh = PlaneMesh.new()
+	plane_mesh.size = Vector2(1000, 1000)
+	plane_mesh.subdivide_width = 200
+	plane_mesh.subdivide_depth = 200
+	
+	var water_instance = MeshInstance3D.new()
+	water_instance.mesh = plane_mesh
+	water_instance.name = \"WaterPlane\"
+	water_instance.position = Vector3(0, -0.1, 0)
+	
+	add_child(water_instance)
+	water_plane = water_instance
+	
+	print(\"Water plane created\")
+"
+
+[sub_resource type="GDScript" id="GDScript_i5arm"]
+script/source = "class_name RhythmTrackComponent
+extends Node
+
+# Audio
+@export_group(\"Audio\")
+@export var track_music: AudioStream
+@export var lose_heart_sound: AudioStream
+@export var combo_milestone_sound: AudioStream
+@export var fail_sound: AudioStream
+
+# Game Settings
+@export_group(\"Game Settings\")
+@export var starting_hearts: int = 3
+@export var combo_milestone: int = 10  # Play sound every X combo
+
+# Track Data (for future note system)
+@export_group(\"Track Data\")
+@export var note_data_path: String = \"\"  # Path to JSON or resource with note timing
+@export var bpm: float = 120.0
+@export var track_duration: float = 180.0  # in seconds
+
+# References
+@export_group(\"References\")
+@export var bike_controller: Node  # Reference to bike or bike component
+@export var audio_player: AudioStreamPlayer  # For music
+@export var sfx_player: AudioStreamPlayer  # For sound effects
+
+# Internal state
+var track_time: float = 0.0
+var is_playing: bool = false
+
+func _ready():
+	# Register with global manager
+	WaveRiderManager.register_track_component(self)
+	
+	# Connect to global signals
+	WaveRiderManager.game_started.connect(_on_game_started)
+	WaveRiderManager.combo_milestone_reached.connect(_on_combo_milestone)
+	WaveRiderManager.heart_lost.connect(_on_heart_lost)
+	
+	# Setup audio
+	if audio_player and track_music:
+		audio_player.stream = track_music
+	
+
+func _process(delta: float) -> void:
+	if not is_playing:
+		return
+	
+	track_time += delta
+	
+	# This is where note spawning/checking logic will go
+	handle_track_flow(delta)
+
+# Main track flow handler (placeholder for now)
+func handle_track_flow(_delta: float) -> void:
+	# TODO: Spawn notes based on track_time and note_data
+	# TODO: Check for note hits/misses
+	# TODO: Handle lane detection
+	pass
+
+# Start the track
+func start_track() -> void:
+	is_playing = true
+	track_time = 0.0
+	
+	if audio_player:
+		audio_player.play()
+	
+	WaveRiderManager.start_game()
+
+# Stop the track
+func stop_track() -> void:
+	is_playing = false
+	
+	if audio_player:
+		audio_player.stop()
+
+# Pause the track
+func pause_track() -> void:
+	is_playing = false
+	
+	if audio_player:
+		audio_player.stream_paused = true
+
+# Resume the track
+func resume_track() -> void:
+	is_playing = true
+	
+	if audio_player:
+		audio_player.stream_paused = false
+
+# Called when player hits a note correctly
+func note_hit() -> void:
+	WaveRiderManager.increment_combo()
+
+# Called when player misses a note
+func note_missed() -> void:
+	WaveRiderManager.reset_combo()
+	WaveRiderManager.lose_heart()
+
+# Signal callbacks
+func _on_game_started() -> void:
+	print(\"Game started!\")
+
+func _on_game_failed() -> void:
+	stop_track()
+	if sfx_player and fail_sound:
+		sfx_player.stream = fail_sound
+		sfx_player.play()
+
+func _on_combo_milestone(combo: int) -> void:
+	print(\"Combo milestone reached: \", combo)
+	if sfx_player and combo_milestone_sound:
+		sfx_player.stream = combo_milestone_sound
+		sfx_player.play()
+
+func _on_heart_lost(hearts_remaining: int) -> void:
+	print(\"Heart lost! Remaining: \", hearts_remaining)
+	if sfx_player and lose_heart_sound:
+		sfx_player.stream = lose_heart_sound
+		sfx_player.play()
+"
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_5c0y8"]
+sky_top_color = Color(0.77075166, 0.44894886, 0.30757746, 1)
+sky_horizon_color = Color(0.6360206, 0.6425218, 0.77157253, 1)
+sky_curve = 0.4873513
+ground_bottom_color = Color(0.49803922, 0.43529412, 0.49803922, 1)
+ground_horizon_color = Color(0.73935205, 0.6839024, 0.73905015, 1)
+ground_curve = 0.23425364
+ground_energy_multiplier = 1.2
+sun_angle_max = 150.0
+sun_curve = 0.45471507
+
+[sub_resource type="Sky" id="Sky_a0tk4"]
+sky_material = SubResource("ProceduralSkyMaterial_5c0y8")
+
+[sub_resource type="Environment" id="Environment_pkn6g"]
+background_mode = 2
+sky = SubResource("Sky_a0tk4")
+ambient_light_source = 3
+reflected_light_source = 2
+tonemap_mode = 4
+tonemap_exposure = 0.9
+sdfgi_use_occlusion = true
+glow_enabled = true
+glow_normalized = true
+fog_enabled = true
+fog_sun_scatter = 0.1
+fog_height_density = -0.385
+fog_depth_begin = -1108.5
+
+[sub_resource type="CameraAttributesPractical" id="CameraAttributesPractical_34a4m"]
+dof_blur_far_enabled = true
+dof_blur_far_distance = 103.52
+
+[node name="Map" type="Node3D" node_paths=PackedStringArray("player")]
+script = SubResource("GDScript_74fk4")
+map_section_prefab = ExtResource("1_pkn6g")
+player = NodePath("Toon_SuperDuke")
+map_section_size = 120.0
+
+[node name="Toon_SuperDuke" parent="." node_paths=PackedStringArray("lane_marker", "default_marker") groups=["Bike"] instance=ExtResource("3_bq2oe")]
+transform = Transform3D(0.99999994, 0, 0, 0, 0.99999994, 0, 0, 0, 1, 0, 0.7, 0)
+lane_switch_speed = 2.0
+tilt_speed = 2.0
+lane_marker = NodePath("../SecondaryLane")
+default_marker = NodePath("../DefualtLane")
+
+[node name="Camera3D" type="Camera3D" parent="Toon_SuperDuke"]
+transform = Transform3D(-0.91283417, 0, -0.4083305, 0, 1, 0, 0.4083305, 0, -0.91283417, -1.618382, 1.9632546, -3)
+doppler_tracking = 2
+
+[node name="DefualtLane" type="Marker3D" parent="."]
+transform = Transform3D(0.99999994, 0, 0, 0, 0.99999994, 0, 0, 0, 1, 0, 0.69, 0)
+
+[node name="SecondaryLane" type="Marker3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.7358847, 0.18, 0)
+
+[node name="AudioPlayer" type="AudioStreamPlayer" parent="."]
+
+[node name="SoundEffects" type="AudioStreamPlayer" parent="."]
+
+[node name="GameHud" parent="." instance=ExtResource("4_74fk4")]
+
+[node name="SceneManager" type="Node" parent="." node_paths=PackedStringArray("bike_controller", "audio_player", "sfx_player")]
+script = SubResource("GDScript_i5arm")
+bike_controller = NodePath("../Toon_SuperDuke")
+audio_player = NodePath("../AudioPlayer")
+sfx_player = NodePath("../SoundEffects")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_pkn6g")
+camera_attributes = SubResource("CameraAttributesPractical_34a4m")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="WorldEnvironment"]
+transform = Transform3D(1, 0, 0, 0, -0.9626729, 0.2706676, 0, -0.2706676, -0.9626729, 0, 7, 0)

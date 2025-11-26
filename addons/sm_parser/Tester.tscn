@@ -1,0 +1,624 @@
+[gd_scene load_steps=7 format=3 uid="uid://doycyr0brhkma"]
+
+[ext_resource type="Shader" uid="uid://byv5fo6x518by" path="res://addons/sm_parser/NotePunch.gdshader" id="1_j0ujq"]
+
+[sub_resource type="GDScript" id="GDScript_8j5wv"]
+script/source = "# RhythmGame.gd - Full playable rhythm game
+extends Control
+
+@export_file(\"*.sm\") var sm_file_path: String = \"\"
+@export var difficulty: String = \"medium\"
+@export var spawn_ahead_beats: float = 3.0  # How many beats ahead to spawn notes
+@export var scroll_speed: float = 400.0  # Pixels per second
+
+# Timing windows (in seconds)
+@export var perfect_window: float = 0.05
+@export var great_window: float = 0.10
+@export var good_window: float = 0.15
+@export var miss_window: float = 0.20
+
+# References
+@onready var audio_player: AudioStreamPlayer = $AudioStreamPlayer
+@onready var lanes = [
+	$HBoxContainer/Note1,
+	$HBoxContainer/Note2,
+	$HBoxContainer/Note3,
+	$HBoxContainer/Note4
+]
+
+# UI Labels (add these to your scene)
+@onready var score_label: Label = $ScoreLabel if has_node(\"ScoreLabel\") else null
+@onready var combo_label: Label = $ComboLabel if has_node(\"ComboLabel\") else null
+@onready var judgment_label: Label = $JudgmentLabel if has_node(\"JudgmentLabel\") else null
+
+# Parser and game state
+var parser: SMParser
+var current_measures: Array = []
+var is_playing: bool = false
+var song_time: float = 0.0
+var current_beat: float = 0.0
+var bpm: float = 120.0
+var offset: float = 0.0
+
+# Note spawning
+var spawned_notes: Array = []  # [{node, lane, beat, hit}]
+var last_spawn_beat: float = 0.0
+
+# Game stats
+var score: int = 0
+var combo: int = 0
+var max_combo: int = 0
+var judgments = {\"perfect\": 0, \"great\": 0, \"good\": 0, \"miss\": 0}
+
+# Input mappings (can be changed to custom actions)
+var input_keys = [\"note_lane_1\", \"note_lane_2\", \"note_lane_3\", \"note_lane_4\"]
+
+func _ready():
+	parser = SMParser.new()
+	
+	# Make sure lanes start unfilled
+	for lane in lanes:
+		if lane.material and lane.material is ShaderMaterial:
+			lane.material.set_shader_parameter(\"filled\", false)
+	
+	# Create UI if not in scene
+	setup_ui()
+	
+	if sm_file_path != \"\":
+		load_song()
+	else:
+		print(\"Set sm_file_path in the inspector!\")
+	
+	print(\"\\nPress SPACE to start!\")
+
+func setup_ui():
+	# Create score label if it doesn't exist
+	if score_label == null:
+		score_label = Label.new()
+		score_label.name = \"ScoreLabel\"
+		score_label.position = Vector2(20, 20)
+		score_label.add_theme_font_size_override(\"font_size\", 24)
+		add_child(score_label)
+	
+	# Create combo label
+	if combo_label == null:
+		combo_label = Label.new()
+		combo_label.name = \"ComboLabel\"
+		combo_label.position = Vector2(20, 60)
+		combo_label.add_theme_font_size_override(\"font_size\", 32)
+		add_child(combo_label)
+	
+	# Create judgment label
+	if judgment_label == null:
+		judgment_label = Label.new()
+		judgment_label.name = \"JudgmentLabel\"
+		judgment_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		judgment_label.position = Vector2(get_viewport_rect().size.x / 2 - 100, 150)
+		judgment_label.custom_minimum_size = Vector2(200, 50)
+		judgment_label.add_theme_font_size_override(\"font_size\", 48)
+		add_child(judgment_label)
+	
+	update_ui()
+
+func load_song():
+	print(\"Loading song...\")
+	
+	if not parser.parse_file(sm_file_path):
+		print(\"Failed to parse file!\")
+		return
+	
+	bpm = parser.sm_data.get(\"bpm\", 120.0)
+	offset = parser.sm_data.get(\"offset\", 0.0)
+	
+	print(\"Title: \", parser.sm_data.get(\"title\", \"Unknown\"))
+	print(\"Artist: \", parser.sm_data.get(\"artist\", \"Unknown\"))
+	print(\"BPM: \", bpm)
+	
+	current_measures = parser.get_chart(difficulty)
+	
+	if current_measures.is_empty():
+		print(\"No chart found!\")
+		return
+	
+	print(\"Loaded \", current_measures.size(), \" measures\")
+	
+	var audio = parser.load_audio()
+	if audio:
+		audio_player.stream = audio
+		print(\"Ready to play!\")
+
+func _process(delta):
+	if not is_playing or not audio_player.playing:
+		return
+	
+	song_time = audio_player.get_playback_position() + offset
+	current_beat = (song_time * bpm) / 60.0
+	
+	# Spawn upcoming notes
+	spawn_notes()
+	
+	# Update existing notes
+	update_notes(delta)
+	
+	# Check for missed notes
+	check_missed_notes()
+
+func spawn_notes():
+	var spawn_beat = current_beat + spawn_ahead_beats
+	
+	# Only check once per 16th note
+	if spawn_beat - last_spawn_beat < 0.25:
+		return
+	
+	last_spawn_beat = spawn_beat
+	
+	# Get all notes in the spawn window
+	var upcoming = parser.get_all_notes_in_range(current_measures, spawn_beat, spawn_beat + 0.5)
+	
+	if upcoming.size() > 0:
+		print(\"Found \", upcoming.size(), \" notes to spawn at beat \", spawn_beat)
+	
+	for note_data in upcoming:
+		spawn_note(note_data[\"beat\"], note_data[\"notes\"])
+
+func spawn_note(beat: float, notes: String):
+	for i in range(min(4, notes.length())):
+		var note_type = notes[i]
+		if note_type in [\"1\", \"2\", \"4\"]:  # Regular, hold start, or roll start
+			# Check if we already spawned this note
+			var already_exists = false
+			for existing in spawned_notes:
+				if existing[\"lane\"] == i and abs(existing[\"beat\"] - beat) < 0.01:
+					already_exists = true
+					break
+			
+			if not already_exists:
+				var is_hold_note = (note_type == \"2\" or note_type == \"4\")
+				var hold_end_beat = 0.0
+				
+				# Find hold end if this is a hold note
+				if is_hold_note:
+					hold_end_beat = find_hold_end(i, beat)
+				
+				var note = create_note_visual(i, is_hold_note, hold_end_beat)
+				spawned_notes.append({
+					\"node\": note,
+					\"lane\": i,
+					\"beat\": beat,
+					\"hit\": false,
+					\"spawn_time\": song_time,
+					\"is_hold\": note_type == \"2\",
+					\"is_roll\": note_type == \"4\",
+					\"hold_end_beat\": hold_end_beat
+				})
+				print(\"Spawned \", \"hold \" if note_type == \"2\" else \"\", \"note: lane \", i, \" at beat \", beat, 
+					  \" (end: \", hold_end_beat, \")\" if is_hold_note else \"\")
+
+func create_note_visual(lane_index: int, is_hold: bool = false, hold_end_beat: float = 0.0) -> Control:
+	var container = Control.new()
+	
+	# Create the note head
+	var note = ColorRect.new()
+	note.custom_minimum_size = Vector2(80, 20)
+	note.size = Vector2(80, 20)
+	note.color = Color.MAGENTA if is_hold else Color.CYAN
+	container.add_child(note)
+	
+	# If it's a hold note, create the hold body
+	if is_hold and hold_end_beat > 0.0:
+		var hold_body = ColorRect.new()
+		hold_body.size = Vector2(60, 100)  # Will be resized during update
+		hold_body.position = Vector2(10, -100)  # Centered, extends upward
+		hold_body.color = Color(Color.MAGENTA, 0.5)  # Semi-transparent
+		hold_body.name = \"HoldBody\"
+		container.add_child(hold_body)
+		
+		# Store hold end for later
+		container.set_meta(\"hold_end_beat\", hold_end_beat)
+	
+	# Position at lane but way above screen
+	var lane_pos = lanes[lane_index].global_position
+	container.position = Vector2(lane_pos.x, -100)
+	
+	add_child(container)
+	return container
+
+func update_notes(_delta):
+	for note_data in spawned_notes:
+		var note = note_data[\"node\"]
+		var lane_index = note_data[\"lane\"]
+		var note_beat = note_data[\"beat\"]
+		
+		# Calculate target position
+		var lane_pos = lanes[lane_index].global_position
+		var beat_distance = note_beat - current_beat
+		
+		# Interpolate position based on spawn ahead time
+		var progress = 1.0 - (beat_distance / spawn_ahead_beats)
+		progress = clamp(progress, 0.0, 1.0)
+		
+		note.position.y = lerp(-100.0, lane_pos.y, progress)
+		note.position.x = lane_pos.x
+		
+		# Update hold body length if this is a hold note
+		if note_data.get(\"is_hold\", false) and note_data.get(\"hold_end_beat\", 0.0) > 0.0:
+			var hold_body = note.get_node_or_null(\"HoldBody\")
+			if hold_body:
+				var hold_end_beat = note_data[\"hold_end_beat\"]
+				var end_beat_distance = hold_end_beat - current_beat
+				var end_progress = 1.0 - (end_beat_distance / spawn_ahead_beats)
+				end_progress = clamp(end_progress, 0.0, 1.0)
+				
+				var end_y = lerp(-100.0, lane_pos.y, end_progress)
+				var hold_length = note.position.y - end_y
+				
+				hold_body.size.y = max(hold_length, 0)
+				hold_body.position.y = -hold_length
+
+func check_missed_notes():
+	var to_remove = []
+	
+	for note_data in spawned_notes:
+		if note_data[\"hit\"]:
+			continue
+		
+		# For hold notes, check if they're being held
+		if note_data.get(\"is_hold\", false):
+			var hold_end_beat = note_data.get(\"hold_end_beat\", 0.0)
+			
+			# If hold end has passed and not holding, it's a miss
+			if current_beat > hold_end_beat + 0.5 and not note_data.get(\"holding\", false):
+				if note_data.get(\"hold_started\", false):
+					# They started but didn't finish
+					print(\"Hold dropped on lane \", note_data[\"lane\"])
+				else:
+					# Never hit it at all
+					register_judgment(\"miss\")
+				note_data[\"node\"].queue_free()
+				to_remove.append(note_data)
+		else:
+			# Regular note
+			var note_beat = note_data[\"beat\"]
+			
+			# If note is way past and not hit, it's a miss
+			if current_beat > note_beat + 0.5:
+				register_judgment(\"miss\")
+				note_data[\"node\"].queue_free()
+				to_remove.append(note_data)
+	
+	for note_data in to_remove:
+		spawned_notes.erase(note_data)
+
+func _input(event):
+	if event.is_action_pressed(\"ui_accept\"):
+		if not is_playing:
+			start_song()
+		else:
+			stop_song()
+	
+	if is_playing and event is InputEventKey and not event.echo:
+		if event.pressed:
+			# Key pressed
+			match event.keycode:
+				KEY_D: hit_lane(0)
+				KEY_F: hit_lane(1)
+				KEY_J: hit_lane(2)
+				KEY_K: hit_lane(3)
+				KEY_LEFT: hit_lane(0)
+				KEY_DOWN: hit_lane(1)
+				KEY_UP: hit_lane(2)
+				KEY_RIGHT: hit_lane(3)
+		else:
+			# Key released
+			match event.keycode:
+				KEY_D: release_lane(0)
+				KEY_F: release_lane(1)
+				KEY_J: release_lane(2)
+				KEY_K: release_lane(3)
+				KEY_LEFT: release_lane(0)
+				KEY_DOWN: release_lane(1)
+				KEY_UP: release_lane(2)
+				KEY_RIGHT: release_lane(3)
+
+func hit_lane(lane_index: int):
+	print(\"Hit lane \", lane_index, \" at beat \", current_beat, \" (song time: \", song_time, \")\")
+	
+	# Visual feedback
+	flash_lane(lane_index)
+	
+	# Find closest note in this lane
+	var closest_note = null
+	var closest_time_diff = miss_window
+	
+	print(\"  Checking \", spawned_notes.size(), \" notes\")
+	
+	for note_data in spawned_notes:
+		if note_data[\"lane\"] == lane_index and not note_data[\"hit\"]:
+			var note_beat = note_data[\"beat\"]
+			var note_time = beat_to_time(note_beat)
+			var time_diff = abs(note_time - song_time)
+			
+			print(\"    Note at beat \", note_beat, \" time diff: \", time_diff)
+			
+			if time_diff < closest_time_diff:
+				closest_time_diff = time_diff
+				closest_note = note_data
+	
+	# Judge the hit
+	if closest_note:
+		var judgment = judge_timing(closest_time_diff)
+		print(\"  -> \", judgment.to_upper(), \" (\", closest_time_diff, \"s)\")
+		
+		# If it's a hold note, mark as holding
+		if closest_note.get(\"is_hold\", false):
+			closest_note[\"holding\"] = true
+			closest_note[\"hold_started\"] = true
+			closest_note[\"node\"].modulate = Color.YELLOW  # Indicate holding
+			register_judgment(judgment)
+		else:
+			# Regular note - remove immediately
+			register_judgment(judgment)
+			closest_note[\"hit\"] = true
+			closest_note[\"node\"].modulate = Color.GREEN
+			await get_tree().create_timer(0.1).timeout
+			if is_instance_valid(closest_note[\"node\"]):
+				closest_note[\"node\"].queue_free()
+			spawned_notes.erase(closest_note)
+	else:
+		print(\"  -> No note found within window\")
+
+func release_lane(lane_index: int):
+	print(\"Released lane \", lane_index, \" at beat \", current_beat)
+	
+	# Find any hold notes being held in this lane
+	for note_data in spawned_notes:
+		if note_data[\"lane\"] == lane_index and note_data.get(\"holding\", false):
+			var hold_end_beat = note_data.get(\"hold_end_beat\", 0.0)
+			var hold_end_time = beat_to_time(hold_end_beat)
+			var time_diff = hold_end_time - song_time
+			
+			print(\"  Hold ended. Expected end at beat \", hold_end_beat, \" (\", time_diff, \"s early/late)\")
+			
+			# Check if they held long enough
+			if time_diff > 0.1:  # Released more than 0.1s early
+				print(\"  -> Released too early! Breaking combo\")
+				combo = 0  # Break combo
+				judgments[\"miss\"] += 1
+				note_data[\"node\"].modulate = Color.RED
+			else:
+				# Held successfully
+				print(\"  -> Hold complete!\")
+				note_data[\"node\"].modulate = Color.GREEN
+			
+			# Mark as hit and clean up
+			note_data[\"hit\"] = true
+			note_data[\"holding\"] = false
+			await get_tree().create_timer(0.15).timeout
+			if is_instance_valid(note_data[\"node\"]):
+				note_data[\"node\"].queue_free()
+			spawned_notes.erase(note_data)
+			
+			update_ui()
+			return
+
+func judge_timing(time_diff: float) -> String:
+	if time_diff <= perfect_window:
+		return \"perfect\"
+	elif time_diff <= great_window:
+		return \"great\"
+	elif time_diff <= good_window:
+		return \"good\"
+	else:
+		return \"miss\"
+
+func register_judgment(judgment: String):
+	judgments[judgment] += 1
+	
+	# Update combo
+	if judgment != \"miss\":
+		combo += 1
+		max_combo = max(max_combo, combo)
+		
+		# Award points
+		match judgment:
+			\"perfect\": score += 300
+			\"great\": score += 200
+			\"good\": score += 100
+	else:
+		combo = 0
+	
+	# Show judgment
+	show_judgment(judgment)
+	update_ui()
+
+func show_judgment(judgment: String):
+	if judgment_label:
+		judgment_label.text = judgment.to_upper()
+		
+		match judgment:
+			\"perfect\": judgment_label.modulate = Color.GOLD
+			\"great\": judgment_label.modulate = Color.GREEN
+			\"good\": judgment_label.modulate = Color.BLUE
+			\"miss\": judgment_label.modulate = Color.RED
+		
+		# Fade out
+		var tween = create_tween()
+		tween.tween_property(judgment_label, \"modulate:a\", 0.0, 0.5).set_delay(0.3)
+
+func update_ui():
+	if score_label:
+		score_label.text = \"Score: \" + str(score)
+	
+	if combo_label:
+		if combo > 0:
+			combo_label.text = str(combo) + \"x\"
+			combo_label.modulate = Color.YELLOW if combo >= 10 else Color.WHITE
+		else:
+			combo_label.text = \"\"
+
+func flash_lane(index: int):
+	if index >= 0 and index < lanes.size():
+		var lane = lanes[index]
+		# Assuming the shader has a \"filled\" uniform
+		if lane.material and lane.material is ShaderMaterial:
+			lane.material.set_shader_parameter(\"filled\", true)
+			await get_tree().create_timer(0.1).timeout
+			if is_instance_valid(lane) and lane.material:
+				lane.material.set_shader_parameter(\"filled\", false)
+		else:
+			# Fallback to color change
+			lane.modulate = Color.WHITE * 1.5
+			await get_tree().create_timer(0.05).timeout
+			if is_instance_valid(lane):
+				lane.modulate = Color.WHITE
+
+func find_hold_end(lane: int, start_beat: float) -> float:
+	# Search forward in the chart for the hold end (3)
+	var start_measure = int(start_beat / 4.0)
+	var start_index_in_measure = int(fmod(start_beat, 4.0) * (float(current_measures[start_measure].size()) / 4.0))
+	
+	# Search through measures
+	for m in range(start_measure, current_measures.size()):
+		var measure = current_measures[m]
+		var start_idx = start_index_in_measure if m == start_measure else 0
+		
+		for i in range(start_idx + 1, measure.size()):
+			var line = measure[i]
+			if lane < line.length() and line[lane] == \"3\":
+				# Found the end!
+				var notes_per_beat = float(measure.size()) / 4.0
+				return float(m * 4) + (float(i) / notes_per_beat)
+		
+		start_index_in_measure = 0
+	
+	return start_beat  # No end found, treat as tap note
+
+func beat_to_time(beat: float) -> float:
+	return (beat * 60.0) / bpm
+
+func start_song():
+	if audio_player.stream == null:
+		print(\"No audio loaded!\")
+		return
+	
+	# Reset game state
+	score = 0
+	combo = 0
+	max_combo = 0
+	judgments = {\"perfect\": 0, \"great\": 0, \"good\": 0, \"miss\": 0}
+	
+	# Clear any existing notes
+	for note_data in spawned_notes:
+		note_data[\"node\"].queue_free()
+	spawned_notes.clear()
+	
+	# Reset lane visuals
+	for lane in lanes:
+		if lane.material and lane.material is ShaderMaterial:
+			lane.material.set_shader_parameter(\"filled\", false)
+		lane.modulate = Color.WHITE
+	
+	audio_player.play()
+	is_playing = true
+	song_time = 0.0
+	current_beat = 0.0
+	last_spawn_beat = 0.0
+	
+	update_ui()
+	print(\"\\n♪ Song started! ♪\")
+	print(\"Spawn ahead: \", spawn_ahead_beats, \" beats\")
+	print(\"Current measures: \", current_measures.size())
+
+func stop_song():
+	audio_player.stop()
+	is_playing = false
+	
+	# Clean up notes
+	for note_data in spawned_notes:
+		note_data[\"node\"].queue_free()
+	spawned_notes.clear()
+	
+	# Show final results
+	print(\"\\n=== Results ===\")
+	print(\"Score: \", score)
+	print(\"Max Combo: \", max_combo)
+	print(\"Perfect: \", judgments[\"perfect\"])
+	print(\"Great: \", judgments[\"great\"])
+	print(\"Good: \", judgments[\"good\"])
+	print(\"Miss: \", judgments[\"miss\"])
+	
+	for lane in lanes:
+		lane.modulate = Color.WHITE
+"
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_j0ujq"]
+resource_local_to_scene = true
+shader = ExtResource("1_j0ujq")
+shader_parameter/filled = true
+shader_parameter/thickness = 0.05
+shader_parameter/smoothness = 0.01
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_nqkjc"]
+resource_local_to_scene = true
+shader = ExtResource("1_j0ujq")
+shader_parameter/filled = true
+shader_parameter/thickness = 0.05
+shader_parameter/smoothness = 0.01
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_pxigt"]
+resource_local_to_scene = true
+shader = ExtResource("1_j0ujq")
+shader_parameter/filled = true
+shader_parameter/thickness = 0.05
+shader_parameter/smoothness = 0.01
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_3nup6"]
+resource_local_to_scene = true
+shader = ExtResource("1_j0ujq")
+shader_parameter/filled = true
+shader_parameter/thickness = 0.05
+shader_parameter/smoothness = 0.01
+
+[node name="Control" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = SubResource("GDScript_8j5wv")
+sm_file_path = "uid://cjhx0ayievek5"
+
+[node name="HBoxContainer" type="HBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 221.0
+offset_top = -176.0
+offset_right = -208.0
+grow_horizontal = 2
+grow_vertical = 0
+
+[node name="Note1" type="ColorRect" parent="HBoxContainer"]
+material = SubResource("ShaderMaterial_j0ujq")
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Note2" type="ColorRect" parent="HBoxContainer"]
+material = SubResource("ShaderMaterial_nqkjc")
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Note3" type="ColorRect" parent="HBoxContainer"]
+material = SubResource("ShaderMaterial_pxigt")
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Note4" type="ColorRect" parent="HBoxContainer"]
+material = SubResource("ShaderMaterial_3nup6")
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="AudioStreamPlayer" type="AudioStreamPlayer" parent="."]

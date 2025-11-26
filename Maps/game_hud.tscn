@@ -1,0 +1,886 @@
+[gd_scene load_steps=12 format=3 uid="uid://duo0ifmxr78wf"]
+
+[ext_resource type="PackedScene" uid="uid://c803w57skkgn7" path="res://Ice/IceBerg/iceberg_active.tscn" id="1_1wi0u"]
+[ext_resource type="Material" uid="uid://dw3la3o3kd0mx" path="res://Textures/Outline.tres" id="1_h4i1n"]
+[ext_resource type="Texture2D" uid="uid://bciew216inmag" path="res://Textures/Arrow.svg" id="1_kkbib"]
+[ext_resource type="Texture2D" uid="uid://c7jxss4cg3dl3" path="res://Textures/Heart.svg" id="2_kkbib"]
+
+[sub_resource type="GDScript" id="GDScript_1wi0u"]
+script/source = "# HorizontalRhythmGame.gd
+# Attach to GameHud CanvasLayer
+extends CanvasLayer
+
+@export_file(\"*.sm\") var sm_file_path: String = \"\"
+@export var difficulty: String = \"medium\"
+@export var spawn_ahead_beats: float = 3.0
+@export var combine_all_lanes: bool = true
+@export var note_fade_time: float = 0.5
+
+# Iceberg spawning
+@export_group(\"Iceberg Spawning\")
+@export var iceberg_scene: PackedScene
+@export var iceberg_spawn_distance: float = 30.0  # Distance ahead of bike
+@export var iceberg_cooldown: float = 5.0
+@export var iceberg_warning_time: float = 2.0  # Spawn X seconds before hold note arrives
+@export var dodge_start_distance: float = 10.0  # How close to iceberg before dodging (in units)
+
+# Bike control
+@export_group(\"Bike Dodge Control\")
+@export var auto_dodge_on_hold: bool = true  # Automatically tilt bike during hold notes
+@export var dodge_transition_time: float = 0.3  # Time to move to side lane
+
+# Scene references
+@onready var note_spawner: Marker2D = $Input/NoteSpawner
+@onready var target_position = $Input/StaticBody2D
+@onready var miss_marker: Marker2D = null
+@export var miss_marker_path: NodePath
+
+@onready var score_label = $Score/ScoreNumber
+@onready var score_multiplier = $Score/ScoreMultiplier
+@onready var hearts_container = $Hearts
+@onready var hearts = [$Hearts/Heart1, $Hearts/Heart2, $Hearts/Heart3]
+
+# Note scenes
+const NOTE_SCENE = preload(\"res://Scripts/NoteTypes.tscn\")
+
+# Audio player
+var audio_player: AudioStreamPlayer
+
+# Parser and game state
+var parser: SMParser
+var current_measures: Array = []
+var is_playing: bool = false
+var song_time: float = 0.0
+var current_beat: float = 0.0
+var bpm: float = 120.0
+var ui_offset: float = 0.0
+
+# Note spawning
+var spawned_notes: Array = []
+var last_spawn_beat: float = 0.0
+
+# Game stats
+var score: int = 0
+var combo: int = 0
+var max_combo: int = 0
+var judgments = {\"perfect\": 0, \"great\": 0, \"good\": 0, \"miss\": 0}
+var local_hearts: int = 3
+
+# Timing windows
+var perfect_window: float = 0.05
+var great_window: float = 0.10
+var good_window: float = 0.15
+var miss_window: float = 0.20
+
+# Iceberg management
+var last_iceberg_spawn_time: float = 0.0
+var map_node: Node3D = null
+var bike_node: Node3D = null
+var secondary_lane_marker: Node3D = null
+var default_lane_marker: Node3D = null
+var active_icebergs: Array = []
+var hold_notes_with_icebergs: Dictionary = {}
+var pending_dodges: Array = []  # Hold notes waiting to dodge when close to iceberg
+
+# Bike dodge state
+var is_bike_dodging: bool = false
+var dodge_tween: Tween = null
+
+func _ready():
+	# Create audio player
+	audio_player = AudioStreamPlayer.new()
+	add_child(audio_player)
+	
+	# Get miss marker if assigned
+	if miss_marker_path:
+		miss_marker = get_node_or_null(miss_marker_path)
+		if miss_marker:
+			print(\"Miss marker assigned at X: \", miss_marker.global_position.x)
+	
+	# Find map and bike references
+	find_map_and_bike()
+	
+	parser = SMParser.new()
+	
+	if sm_file_path != \"\":
+		load_song()
+	else:
+		print(\"Set sm_file_path in the inspector!\")
+	
+	update_ui()
+	update_hearts_ui()
+	print(\"\\nPress SPACE to start the song!\")
+	print(\"Combine all lanes: \", combine_all_lanes)
+	print(\"Auto dodge on hold: \", auto_dodge_on_hold)
+
+func find_map_and_bike():
+	# Find the Map node (parent of this HUD)
+	var current = get_parent()
+	while current:
+		if current.name == \"Map\" or current is Node3D:
+			map_node = current
+			break
+		current = current.get_parent()
+	
+	# Find the bike in the scene
+	if map_node:
+		bike_node = map_node.get_node_or_null(\"Toon_SuperDuke\")
+		secondary_lane_marker = map_node.get_node_or_null(\"SecondaryLane\")
+		default_lane_marker = map_node.get_node_or_null(\"DefualtLane\")
+	
+	if map_node:
+		print(\"Found map node: \", map_node.name)
+	if bike_node:
+		print(\"Found bike node: \", bike_node.name)
+	if secondary_lane_marker:
+		print(\"Found secondary lane marker\")
+	if default_lane_marker:
+		print(\"Found default lane marker\")
+
+func update_hearts_ui():
+	for i in range(hearts.size()):
+		if i < local_hearts:
+			hearts[i].modulate = Color.WHITE
+			hearts[i].visible = true
+		else:
+			hearts[i].visible = false
+
+func load_song():
+	print(\"Loading song...\")
+	
+	if not parser.parse_file(sm_file_path):
+		print(\"Failed to parse file!\")
+		return
+	
+	bpm = parser.sm_data.get(\"bpm\", 120.0)
+	ui_offset = parser.sm_data.get(\"offset\", 0.0)
+	
+	print(\"Title: \", parser.sm_data.get(\"title\", \"Unknown\"))
+	print(\"Artist: \", parser.sm_data.get(\"artist\", \"Unknown\"))
+	print(\"BPM: \", bpm)
+	
+	current_measures = parser.get_chart(difficulty)
+	
+	if current_measures.is_empty():
+		print(\"No chart found!\")
+		return
+	
+	print(\"Loaded \", current_measures.size(), \" measures\")
+	
+	var audio = parser.load_audio()
+	if audio:
+		audio_player.stream = audio
+		print(\"Audio ready!\")
+
+func _process(_delta):
+	if not is_playing or not audio_player.playing:
+		return
+	
+	song_time = audio_player.get_playback_position() + ui_offset
+	current_beat = (song_time * bpm) / 60.0
+	
+	spawn_notes()
+	update_notes()
+	check_missed_notes()
+	check_upcoming_hold_notes()
+	check_pending_dodges()  # Check if bike is close enough to dodge
+
+func spawn_notes():
+	var spawn_beat = current_beat + spawn_ahead_beats
+	
+	if spawn_beat - last_spawn_beat < 0.25:
+		return
+	
+	last_spawn_beat = spawn_beat
+	
+	var upcoming = parser.get_all_notes_in_range(current_measures, spawn_beat, spawn_beat + 0.5)
+	
+	for note_data in upcoming:
+		spawn_note(note_data[\"beat\"], note_data[\"notes\"])
+
+func spawn_note(beat: float, notes: String):
+	var notes_to_spawn = []
+	
+	if combine_all_lanes:
+		for i in range(min(4, notes.length())):
+			var note_type = notes[i]
+			if note_type in [\"1\", \"2\", \"4\"]:
+				notes_to_spawn.append({\"type\": note_type, \"lane\": i})
+	else:
+		if notes.length() > 0 and notes[0] in [\"1\", \"2\", \"4\"]:
+			notes_to_spawn.append({\"type\": notes[0], \"lane\": 0})
+	
+	for note_info in notes_to_spawn:
+		var already_exists = false
+		for existing in spawned_notes:
+			if abs(existing[\"beat\"] - beat) < 0.01 and existing.get(\"note_type\", \"\") == note_info[\"type\"]:
+				already_exists = true
+				break
+		
+		if not already_exists:
+			var note_type = note_info[\"type\"]
+			var is_hold_note = (note_type == \"2\" or note_type == \"4\")
+			var hold_end_beat = 0.0
+			
+			if is_hold_note:
+				hold_end_beat = find_hold_end(note_info[\"lane\"], beat)
+			
+			var note_node = create_note_visual(is_hold_note, beat, hold_end_beat)
+			
+			spawned_notes.append({
+				\"node\": note_node,
+				\"beat\": beat,
+				\"note_type\": note_type,
+				\"hit\": false,
+				\"is_hold\": is_hold_note,
+				\"hold_end_beat\": hold_end_beat,
+				\"holding\": false,
+				\"hold_started\": false,
+				\"iceberg_spawned\": false
+			})
+
+func create_note_visual(is_hold: bool, _note_beat: float, _hold_end_beat: float) -> Control:
+	var note = NOTE_SCENE.instantiate()
+	get_node(\"Input\").add_child(note)
+	
+	if is_hold:
+		note.get_node(\"SingleNote\").visible = false
+		note.get_node(\"HoldNote\").visible = true
+		
+		var hold_body = note.get_node(\"HoldNote/HoldBody\")
+		hold_body.size.x = 100
+		
+	else:
+		note.get_node(\"SingleNote\").visible = true
+		note.get_node(\"HoldNote\").visible = false
+	
+	note.global_position = note_spawner.global_position
+	
+	return note
+
+func find_hold_end(lane: int, start_beat: float) -> float:
+	var start_measure = int(start_beat / 4.0)
+	
+	if start_measure >= current_measures.size():
+		return start_beat + 2.0
+	
+	var start_index_in_measure = int(fmod(start_beat, 4.0) * (float(current_measures[start_measure].size()) / 4.0))
+	
+	for m in range(start_measure, current_measures.size()):
+		var measure = current_measures[m]
+		var start_idx = start_index_in_measure if m == start_measure else 0
+		
+		for i in range(start_idx + 1, measure.size()):
+			var line = measure[i]
+			if lane < line.length() and line[lane] == \"3\":
+				var notes_per_beat = float(measure.size()) / 4.0
+				var end_beat = float(m * 4) + (float(i) / notes_per_beat)
+				return end_beat
+		
+		start_index_in_measure = 0
+	
+	return start_beat + 2.0
+
+func check_upcoming_hold_notes():
+	# Check for hold notes coming up and spawn icebergs early
+	for note_data in spawned_notes:
+		if note_data.get(\"is_hold\", false) and not note_data.get(\"iceberg_spawned\", false):
+			var note_beat = note_data[\"beat\"]
+			var note_time = (note_beat * 60.0) / bpm
+			var time_until_note = note_time - song_time
+			
+			# Spawn iceberg X seconds before the hold note arrives
+			if time_until_note <= iceberg_warning_time and time_until_note > 0:
+				spawn_iceberg_for_hold_note(note_data)
+				note_data[\"iceberg_spawned\"] = true
+
+func spawn_iceberg_for_hold_note(note_data: Dictionary):
+	# Check cooldown
+	var current_time = Time.get_ticks_msec() / 1000.0
+	if current_time - last_iceberg_spawn_time < iceberg_cooldown:
+		print(\"Iceberg on cooldown. Skipping spawn.\")
+		return
+	
+	if not iceberg_scene:
+		print(\"ERROR: Iceberg scene not assigned!\")
+		return
+	
+	if not map_node or not bike_node:
+		print(\"ERROR: Map or bike not found!\")
+		return
+	
+	# Get bike position and calculate spawn ahead
+	var bike_pos = bike_node.global_position
+	
+	# Calculate spawn position directly ahead on Z axis
+	var spawn_position = Vector3(
+		bike_pos.x,
+		0.0,
+		bike_pos.z + iceberg_spawn_distance
+	)
+	
+	# Instantiate iceberg
+	var iceberg = iceberg_scene.instantiate()
+	
+	# Freeze physics to prevent pushing bike
+	if iceberg is RigidBody3D:
+		iceberg.freeze = true
+		print(\"Iceberg physics frozen\")
+	elif iceberg is StaticBody3D:
+		print(\"Iceberg is static\")
+	
+	map_node.add_child(iceberg)
+	iceberg.global_position = spawn_position
+	iceberg.rotation.y = randf_range(0, TAU)
+	
+	print(\"Iceberg spawned at: \", spawn_position, \" for hold note at beat \", note_data[\"beat\"])
+	last_iceberg_spawn_time = current_time
+	
+	# Track iceberg
+	active_icebergs.append(iceberg)
+	hold_notes_with_icebergs[note_data[\"beat\"]] = iceberg
+
+func check_pending_dodges():
+	# Check if bike is close enough to any queued icebergs to start dodging
+	if not bike_node:
+		return
+	
+	var bike_pos = bike_node.global_position
+	
+	for i in range(pending_dodges.size() - 1, -1, -1):  # Iterate backwards for safe removal
+		var dodge_data = pending_dodges[i]
+		
+		if dodge_data[\"started\"]:
+			continue
+		
+		var iceberg = dodge_data[\"iceberg\"]
+		if not is_instance_valid(iceberg):
+			pending_dodges.remove_at(i)
+			continue
+		
+		var iceberg_pos = iceberg.global_position
+		var distance_to_iceberg = abs(iceberg_pos.z - bike_pos.z)
+		
+		# Start dodge when close enough
+		if distance_to_iceberg <= dodge_start_distance:
+			print(\"Close enough to iceberg! Distance: \", distance_to_iceberg, \" - Starting dodge NOW\")
+			start_bike_dodge(dodge_data[\"hold_duration\"])
+			dodge_data[\"started\"] = true
+			pending_dodges.remove_at(i)
+
+func update_notes():
+	for note_data in spawned_notes:
+		var note = note_data[\"node\"]
+		
+		if not is_instance_valid(note):
+			continue
+		
+		if note_data.get(\"fading\", false):
+			var fade_speed = 500.0
+			note.global_position.x -= fade_speed * get_process_delta_time()
+			
+			if note.global_position.x < -150:
+				note.queue_free()
+				spawned_notes.erase(note_data)
+			continue
+		
+		var target_pos = target_position.global_position
+		var spawn_pos = note_spawner.global_position
+		
+		var note_beat = note_data[\"beat\"]
+		var beat_distance = note_beat - current_beat
+		var progress = 1.0 - (beat_distance / spawn_ahead_beats)
+		
+		note.global_position.x = lerp(spawn_pos.x, target_pos.x, progress)
+		
+		if progress > 1.0:
+			var extra_distance = (progress - 1.0) * (spawn_pos.x - target_pos.x)
+			note.global_position.x -= extra_distance
+		
+		note.global_position.y = spawn_pos.y
+		
+		if note_data.get(\"is_hold\", false) and note_data.get(\"hold_end_beat\", 0.0) > 0.0:
+			var hold_node = note.get_node_or_null(\"HoldNote\")
+			if hold_node:
+				var hold_body = hold_node.get_node_or_null(\"HoldBody\")
+				if hold_body:
+					var hold_end_beat = note_data[\"hold_end_beat\"]
+					var end_beat_distance = hold_end_beat - current_beat
+					var end_progress = 1.0 - (end_beat_distance / spawn_ahead_beats)
+					
+					var end_x = lerp(spawn_pos.x, target_pos.x, end_progress)
+					if end_progress > 1.0:
+						var end_extra = (end_progress - 1.0) * (spawn_pos.x - target_pos.x)
+						end_x -= end_extra
+					
+					var hold_width = note.global_position.x - end_x
+					hold_body.size.x = max(hold_width, 10)
+
+func check_missed_notes():
+	var to_remove = []
+	
+	for note_data in spawned_notes:
+		if note_data[\"hit\"] or note_data.get(\"fading\", false):
+			continue
+		
+		var note = note_data[\"node\"]
+		if not is_instance_valid(note):
+			continue
+			
+		var note_beat = note_data[\"beat\"]
+		var beat_distance = note_beat - current_beat
+		
+		if beat_distance < -0.5:
+			var should_miss = false
+			
+			if miss_marker:
+				should_miss = note.global_position.x <= miss_marker.global_position.x
+			else:
+				should_miss = true
+			
+			if should_miss:
+				register_judgment(\"miss\")
+				fade_and_remove_note(note_data)
+				to_remove.append(note_data)
+	
+	for note_data in to_remove:
+		spawned_notes.erase(note_data)
+
+func fade_and_remove_note(note_data: Dictionary):
+	var note = note_data[\"node\"]
+	if not is_instance_valid(note):
+		return
+		
+	note_data[\"fading\"] = true
+	note.modulate = Color.RED
+	
+	var tween = create_tween()
+	tween.tween_property(note, \"modulate:a\", 0.0, 0.3)
+
+func _input(event):
+	if event.is_action_pressed(\"ui_accept\"):
+		if not is_playing:
+			start_song()
+		else:
+			hit_note()
+	elif event.is_action_released(\"ui_accept\"):
+		if is_playing:
+			release_note()
+
+func hit_note():
+	var closest_note = null
+	var closest_time_diff = miss_window
+	
+	for note_data in spawned_notes:
+		if not note_data[\"hit\"] and not note_data.get(\"fading\", false):
+			var note_beat = note_data[\"beat\"]
+			var note_time = (note_beat * 60.0) / bpm
+			var time_diff = abs(note_time - song_time)
+			
+			if time_diff < miss_window and time_diff < closest_time_diff:
+				closest_time_diff = time_diff
+				closest_note = note_data
+	
+	if closest_note:
+		var judgment = judge_timing(closest_time_diff)
+		
+		if closest_note.get(\"is_hold\", false):
+			closest_note[\"holding\"] = true
+			closest_note[\"hold_started\"] = true
+			closest_note[\"node\"].modulate = Color.YELLOW
+			register_judgment(judgment)
+			
+			# Queue dodge - will execute when close to iceberg
+			if auto_dodge_on_hold:
+				var hold_duration = calculate_hold_duration(closest_note)
+				var iceberg_pos = hold_notes_with_icebergs.get(closest_note[\"beat\"])
+				
+				pending_dodges.append({
+					\"note_data\": closest_note,
+					\"hold_duration\": hold_duration,
+					\"iceberg\": iceberg_pos,
+					\"started\": false
+				})
+				print(\"Hold note hit - dodge queued, waiting to get close to iceberg...\")
+		else:
+			register_judgment(judgment)
+			closest_note[\"hit\"] = true
+			closest_note[\"node\"].modulate = Color.GREEN
+			await get_tree().create_timer(0.1).timeout
+			if is_instance_valid(closest_note[\"node\"]):
+				closest_note[\"node\"].queue_free()
+			spawned_notes.erase(closest_note)
+
+func calculate_hold_duration(note_data: Dictionary) -> float:
+	var start_beat = note_data[\"beat\"]
+	var end_beat = note_data.get(\"hold_end_beat\", start_beat + 2.0)
+	var duration_beats = end_beat - start_beat
+	var duration_seconds = (duration_beats * 60.0) / bpm
+	return duration_seconds
+
+func release_note():
+	for current_note in spawned_notes:
+		if current_note.get(\"holding\", false):
+			var hold_end_beat = current_note.get(\"hold_end_beat\", 0.0)
+			var hold_end_time = (hold_end_beat * 60.0) / bpm
+			var time_diff = abs(hold_end_time - song_time)
+			
+			if time_diff > 0.15:
+				# HOLD NOTE FAILED - Released too early
+				print(\"Hold note failed! Released too early\")
+				combo = 0
+				judgments[\"miss\"] += 1
+				lose_life()
+				current_note[\"node\"].modulate = Color.RED
+				
+				# Cancel any pending dodge for this note
+				for i in range(pending_dodges.size() - 1, -1, -1):
+					var dodge_data = pending_dodges[i]
+					if dodge_data[\"note_data\"] == current_note:
+						pending_dodges.remove_at(i)
+						print(\"Pending dodge cancelled\")
+				
+				# Cancel active dodge immediately - bike returns to default, will hit iceberg
+				if is_bike_dodging and dodge_tween:
+					dodge_tween.kill()
+					is_bike_dodging = false
+					
+					# Force bike back to default lane X position quickly
+					if bike_node and default_lane_marker:
+						var return_tween = create_tween()
+						var default_x = default_lane_marker.global_position.x
+						return_tween.tween_property(bike_node, \"global_position:x\", default_x, 0.2)
+						print(\"Bike returning to default lane - will hit iceberg!\")
+			else:
+				# HOLD NOTE SUCCEEDED - Leave iceberg in world
+				print(\"Hold note succeeded! Iceberg remains in world\")
+				current_note[\"node\"].modulate = Color.GREEN
+			
+			current_note[\"hit\"] = true
+			current_note[\"holding\"] = false
+			await get_tree().create_timer(0.15).timeout
+			if is_instance_valid(current_note[\"node\"]):
+				current_note[\"node\"].queue_free()
+			spawned_notes.erase(current_note)
+			
+			update_ui()
+			return
+
+func start_bike_dodge(hold_duration: float):
+	if not bike_node or not secondary_lane_marker or not default_lane_marker:
+		print(\"Cannot dodge - bike or lane markers missing\")
+		return
+	
+	if is_bike_dodging:
+		print(\"Already dodging, canceling previous dodge\")
+		if dodge_tween:
+			dodge_tween.kill()
+	
+	is_bike_dodging = true
+	
+	# Get the X offset between lanes (only move left/right, not Z)
+	var default_x = default_lane_marker.global_position.x
+	var secondary_x = secondary_lane_marker.global_position.x
+	var lane_offset = secondary_x - default_x
+	
+	print(\"Lane offset: \", lane_offset, \" (moving from X=\", default_x, \" to X=\", secondary_x, \")\")
+	
+	# Create tween for smooth movement
+	dodge_tween = create_tween()
+	dodge_tween.set_parallel(false)
+	
+	# Move ONLY X position to secondary lane (keep Z forward movement)
+	dodge_tween.tween_property(bike_node, \"global_position:x\", secondary_x, dodge_transition_time)
+	
+	# Hold in secondary lane for duration of hold note
+	# During this time, bike continues moving forward (Z is not locked)
+	dodge_tween.tween_interval(hold_duration - dodge_transition_time * 2)
+	
+	# Return to default lane X position
+	dodge_tween.tween_property(bike_node, \"global_position:x\", default_x, dodge_transition_time)
+	
+	dodge_tween.finished.connect(func(): 
+		is_bike_dodging = false
+		print(\"Bike dodge completed\")
+	)
+
+func judge_timing(time_diff: float) -> String:
+	if time_diff <= perfect_window:
+		return \"perfect\"
+	elif time_diff <= great_window:
+		return \"great\"
+	elif time_diff <= good_window:
+		return \"good\"
+	else:
+		return \"miss\"
+
+func register_judgment(judgment: String):
+	judgments[judgment] += 1
+	
+	if judgment != \"miss\":
+		combo += 1
+		max_combo = max(max_combo, combo)
+		
+		match judgment:
+			\"perfect\": score += 300 * get_multiplier()
+			\"great\": score += 200 * get_multiplier()
+			\"good\": score += 100 * get_multiplier()
+	else:
+		combo = 0
+		lose_life()
+	
+	update_ui()
+
+func get_multiplier() -> int:
+	if combo >= 50:
+		return 4
+	elif combo >= 30:
+		return 3
+	elif combo >= 10:
+		return 2
+	return 1
+
+func lose_life():
+	local_hearts -= 1
+	print(\"Lost a heart! Hearts remaining: \", local_hearts)
+	update_hearts_ui()
+	
+	if local_hearts <= 0:
+		game_over()
+
+func update_ui():
+	score_label.text = str(score)
+	
+	var multiplier = get_multiplier()
+	score_multiplier.text = str(multiplier) + \"X\"
+	
+	if combo > 0 and multiplier > 1:
+		score_multiplier.modulate = Color.YELLOW
+	else:
+		score_multiplier.modulate = Color.WHITE
+
+func game_over():
+	is_playing = false
+	audio_player.stop()
+	
+	print(\"\\n=== GAME OVER ===\")
+	print(\"Final Score: \", score)
+	print(\"Max Combo: \", max_combo)
+	print(\"Press SPACE to restart\")
+
+func start_song():
+	if audio_player.stream == null:
+		print(\"No audio loaded!\")
+		return
+	
+	score = 0
+	combo = 0
+	max_combo = 0
+	local_hearts = 3
+	judgments = {\"perfect\": 0, \"great\": 0, \"good\": 0, \"miss\": 0}
+	last_iceberg_spawn_time = 0.0
+	is_bike_dodging = false
+	
+	# Cancel any active dodge
+	if dodge_tween:
+		dodge_tween.kill()
+	
+	# Clear pending dodges
+	pending_dodges.clear()
+	
+	# Clear ALL old icebergs from previous songs
+	for iceberg in active_icebergs:
+		if is_instance_valid(iceberg):
+			iceberg.queue_free()
+	active_icebergs.clear()
+	hold_notes_with_icebergs.clear()
+	
+	# Reset bike to default position
+	if bike_node and default_lane_marker:
+		bike_node.global_position = default_lane_marker.global_position
+	
+	for note_data in spawned_notes:
+		if is_instance_valid(note_data[\"node\"]):
+			note_data[\"node\"].queue_free()
+	spawned_notes.clear()
+	
+	audio_player.play()
+	is_playing = true
+	song_time = 0.0
+	current_beat = 0.0
+	last_spawn_beat = 0.0
+	
+	update_ui()
+	update_hearts_ui()
+	print(\"\\n♪ Song started! ♪\")
+	print(\"Hearts: \", local_hearts)
+"
+
+[sub_resource type="Shader" id="Shader_1wi0u"]
+code = "shader_type canvas_item;
+
+group_uniforms Sine;
+uniform bool do_abs;
+uniform bool do_quantize;
+uniform float quantize_to : hint_range(0, 2, 0.1) = 1;
+uniform vec2 sine_amplitude = vec2(1.0, 0.0);
+uniform vec2 sine_speed = vec2(1.0, 0.0);
+
+void vertex() {
+	vec2 s = sin(TIME * sine_speed);
+	if (do_abs) {
+		s = abs(s);
+	}
+	VERTEX += s * sine_amplitude;
+	if (do_quantize) {
+		VERTEX = round(VERTEX / quantize_to);
+		VERTEX *= quantize_to;
+	}
+}"
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_uxhjj"]
+shader = SubResource("Shader_1wi0u")
+shader_parameter/do_abs = false
+shader_parameter/do_quantize = false
+shader_parameter/quantize_to = 1.0
+shader_parameter/sine_amplitude = Vector2(2, 0)
+shader_parameter/sine_speed = Vector2(1, 0)
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_kkbib"]
+radius = 80.0
+
+[sub_resource type="LabelSettings" id="LabelSettings_y3vx5"]
+font_size = 21
+
+[sub_resource type="Gradient" id="Gradient_h4i1n"]
+interpolation_mode = 1
+offsets = PackedFloat32Array(0.3, 0.5, 0.7, 0.98623854)
+colors = PackedColorArray(0, 0, 0, 0, 0.83889705, 0.83889705, 0.838897, 1, 0, 0, 0, 0.02745098, 0.8392157, 0.8392157, 0.8392157, 1)
+
+[sub_resource type="GradientTexture2D" id="GradientTexture2D_kkbib"]
+gradient = SubResource("Gradient_h4i1n")
+fill_from = Vector2(0.5, 0)
+fill_to = Vector2(0.5, 0.85)
+
+[node name="GameHud" type="CanvasLayer"]
+script = SubResource("GDScript_1wi0u")
+sm_file_path = "uid://cjhx0ayievek5"
+note_fade_time = 0.3
+iceberg_scene = ExtResource("1_1wi0u")
+iceberg_spawn_distance = 50.0
+dodge_start_distance = 11.0
+dodge_transition_time = 1.0
+miss_marker_path = NodePath("Input/MissMarker")
+
+[node name="Input" type="Control" parent="."]
+layout_mode = 3
+anchors_preset = 0
+offset_top = 483.0
+offset_right = 1152.0
+offset_bottom = 648.0
+
+[node name="ColorRect" type="ColorRect" parent="Input"]
+layout_mode = 1
+anchors_preset = 14
+anchor_top = 0.5
+anchor_right = 1.0
+anchor_bottom = 0.5
+offset_top = -12.5
+offset_bottom = 20.5
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.5132329, 0.5132329, 0.5132329, 0.627451)
+
+[node name="TextureRect" type="TextureRect" parent="Input"]
+material = SubResource("ShaderMaterial_uxhjj")
+layout_mode = 1
+anchors_preset = 7
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = 55.0
+offset_top = -176.0
+offset_right = 151.0
+offset_bottom = -79.99989
+grow_horizontal = 2
+grow_vertical = 0
+rotation = 1.5707964
+texture = ExtResource("1_kkbib")
+
+[node name="StaticBody2D" type="StaticBody2D" parent="Input"]
+position = Vector2(584, 80)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Input/StaticBody2D"]
+shape = SubResource("CircleShape2D_kkbib")
+
+[node name="NoteSpawner" type="Marker2D" parent="Input"]
+position = Vector2(1152, 58)
+
+[node name="MissMarker" type="Marker2D" parent="Input"]
+position = Vector2(0, 86)
+
+[node name="Score" type="GridContainer" parent="."]
+offset_top = 35.0
+offset_right = 160.0
+offset_bottom = 133.0
+theme_override_constants/h_separation = -1
+columns = 2
+
+[node name="ScoreNumber" type="Label" parent="Score"]
+layout_mode = 2
+text = "10000"
+label_settings = SubResource("LabelSettings_y3vx5")
+
+[node name="ScoreMultiplier" type="Label" parent="Score"]
+layout_mode = 2
+text = "1X"
+label_settings = SubResource("LabelSettings_y3vx5")
+uppercase = true
+
+[node name="ScoreLabel" type="Label" parent="Score"]
+layout_mode = 2
+text = "SCORE"
+label_settings = SubResource("LabelSettings_y3vx5")
+
+[node name="Hearts" type="HBoxContainer" parent="."]
+anchors_preset = -1
+anchor_left = 1.0
+anchor_top = 0.0015432099
+anchor_right = 1.0
+anchor_bottom = 0.058641974
+offset_left = -137.0
+offset_top = 3.0
+offset_bottom = 3.0
+grow_horizontal = 0
+alignment = 1
+metadata/_edit_use_anchors_ = true
+
+[node name="Heart1" type="TextureRect" parent="Hearts"]
+material = ExtResource("1_h4i1n")
+layout_mode = 2
+texture = ExtResource("2_kkbib")
+expand_mode = 3
+
+[node name="Heart2" type="TextureRect" parent="Hearts"]
+material = ExtResource("1_h4i1n")
+layout_mode = 2
+texture = ExtResource("2_kkbib")
+expand_mode = 3
+
+[node name="Heart3" type="TextureRect" parent="Hearts"]
+material = ExtResource("1_h4i1n")
+layout_mode = 2
+texture = ExtResource("2_kkbib")
+expand_mode = 3
+
+[node name="TouchScreenButton" type="TouchScreenButton" parent="."]
+position = Vector2(33, 4)
+rotation = 1.5707964
+scale = Vector2(0.45232198, 0.47558317)
+texture_normal = SubResource("GradientTexture2D_kkbib")
+
+[node name="Label" type="Label" parent="TouchScreenButton"]
+offset_right = 40.0
+offset_bottom = 23.0
+text = "Menu"

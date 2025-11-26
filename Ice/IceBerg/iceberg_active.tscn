@@ -1,0 +1,40 @@
+[gd_scene load_steps=7 format=3 uid="uid://c803w57skkgn7"]
+
+[ext_resource type="PackedScene" uid="uid://dteo6u3v6s24e" path="res://Ice/IceBerg/iceberg.glb" id="1_8gv3q"]
+
+[sub_resource type="Gradient" id="Gradient_tjdks"]
+offsets = PackedFloat32Array(0.14516129, 0.61290324, 0.8655914)
+colors = PackedColorArray(6.930828e-06, 0.8302041, 0.9525927, 1, 0.18935794, 0.68186504, 0.9999997, 1, 0.17206928, 0.6774117, 0.9999973, 1)
+
+[sub_resource type="FastNoiseLite" id="FastNoiseLite_24d76"]
+
+[sub_resource type="NoiseTexture2D" id="NoiseTexture2D_6nn4x"]
+noise = SubResource("FastNoiseLite_24d76")
+color_ramp = SubResource("Gradient_tjdks")
+seamless = true
+invert = true
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_syak3"]
+albedo_texture = SubResource("NoiseTexture2D_6nn4x")
+metallic = 0.08
+roughness = 0.2
+normal_texture = SubResource("NoiseTexture2D_6nn4x")
+uv1_scale = Vector3(5.29, 5.29, 5.29)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_qdoo0"]
+size = Vector3(31.216034, 34.417908, 43.746643)
+
+[node name="IcebergSpawn" instance=ExtResource("1_8gv3q")]
+transform = Transform3D(0.15, 0, 0, 0, 0.15, 0, 0, 0, 0.15, 0, 0, 0)
+
+[node name="Cylinder" parent="." index="0"]
+transform = Transform3D(0.83, 0, 0, 0, 0.83, 0, 0, 0, 0.83, 0, -2.376315, 0)
+surface_material_override/0 = SubResource("StandardMaterial3D_syak3")
+
+[node name="BikeDetection" type="Area3D" parent="." index="1"]
+collision_layer = 2
+collision_mask = 2
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="BikeDetection" index="0"]
+transform = Transform3D(0.99999976, 0, 0, 0, 0.99999976, 0, 0, 0, 0.99999976, 0.584671, 16.70895, -0.030486131)
+shape = SubResource("BoxShape3D_qdoo0")
